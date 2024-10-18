@@ -1,17 +1,301 @@
-#=================================================================================================
-#                    APPAWA: Analytical Partial Pixel Area Weight Assignment                      |
-#                                                                                                 |
-#                                                Written by Dr. John Jasper Bekx Sept. 2024 - ... |
-# ------------------------------------------------------------------------------------------------|
-#                                                                                                 |
-# Worthy of note: All routines assume a pixel size of (1 x 1) a.u.²                               |
-#                 Therefore, APPAWA calculates a fractional weight, not an absolute partial area. |
-# ================================================================================================
-
+#=========================================================
+# APPAWA: Analytical Partial Pixel Area Weight Assignment |
+#                                                         |
+# Written by Dr. John Jasper Bekx Sept. 2024 - ...        |
+# --------------------------------------------------------|
+# NOTE: All routines assume a pixel area of (1 x 1) a.u.² |
+#       Therefore, APPAWA calculates a fractional weight, |
+#       not an absolute partial area.                     |
+# ========================================================
 import numpy as np
 import matplotlib.pyplot as plt
 import math
 import time
+
+# Primordial classes that need no building blocks, only input parameters ---
+class PixelGrid():
+    # -----------------------------------------------------------------------------
+    # This class defines the square pixel grid and contains all of its properties. |
+    # NOTE: Though px_len [μm] is provided, APPAWA's end results are fractional    |
+    #       weights (equivalent essentially to px_len=1).                          |
+    #------------------------------------------------------------------------------
+    def __init__( self, N_px, px_len=75., **kwargs ): # ( self, int, float )
+        self.N_px   = N_px   # Defines a square (N_px x N_px)-grid
+        self.px_len = px_len # Defines the pixel width (=height) in μm - Default=Eiger2 # TODO: verify with DanMAX
+
+        grid_min = 0
+        grid_max = N_px # Normalized to (1 x 1) a.u.² pixels. 
+        self.grid_sq = range( grid_min, grid_max+1 ) # endpoint inclusive = N_px+1 points
+        # Chose not to use a np.linspace, which uses np.int64 (=slow), instead of native int (=fast)
+
+    @classmethod
+    def get_pixelIndex( cls, px_orig, N_px ): # ( cls, (int, int), int )
+        # ---------------------------------------------------------------
+        # Provides the counting index of a given pixel defined by its    |
+        # origin (lower-left corner) location, given as (x,y).           |
+        # Example for a 3x3 pixel grid:                                  |
+        #                             ___________                        |
+        #     e.g.: "0" = (0,0)      |_6_|_7_|_8_|                       |
+        #           "5" = (2,1)      |_3_|_4_|_5_|                       |
+        #           "7" = (1,2)      |_0_|_1_|_2_|                       |
+        #                                                                |
+        # ---------------------------------------------------------------
+        x_px, y_px = px_orig
+        return N_px * y_px + x_px
+
+    @classmethod
+    def get_pixelOrigin( cls, px_index, N_px ): # ( cls, int, int )
+        # ----------------------------------------
+        # Provides the inverse of get_pixelIndex. |
+        # ----------------------------------------
+        return ( int( px_index%N_px ), int( px_index/N_px ) )
+
+class Circle():
+    # -----------------------------------------------------------------------------------
+    # This class defines one of the circles of which diffraction rings are comprised of. |
+    # Since APPAWA returns area fraction weights, it is assumed that R, x0, and y0 are   |
+    # given in units of the px_len.                                                      |
+    # The circle origin (x0,y0) is to be given with respect to the pixel-grid origin.    |
+    #------------------------------------------------------------------------------------
+    def __init__(self, R, x0, y0, **kwargs ): # ( self, float, float, float )
+        self.R  = R  # Radius
+        self.x0 = x0 # Circle origin - x-coordinate
+        self.y0 = y0 # Circle origin - y-coordinate
+    
+    @classmethod
+    def get_circ( cls, x, R, x0, y0 ): # ( cls, float, float, float, float )
+        #----------------------------------------------------------------------------
+        # Provides the y-coordinates at x of a circle of radius R at origin (x0,y0). |
+        # ---------------------------------------------------------------------------
+        radic  = R**2. - ( x - x0 )**2.
+        if( radic < 0. ): # Don't want complex values or RuntimeWarnings from np.sqrt
+            y_upper = np.nan
+            y_lower = np.nan
+        else:
+            y_upper = y0 + radic**( 0.5 )
+            y_lower = y0 - radic**( 0.5 )
+        return y_upper, y_lower
+
+class AziLine():
+    # -----------------------------------------------------------------------------------
+    # This class defines one of the lines, defined by the azimuthal angle chi, which     |
+    # intersects the point x0, y0 used in the azimuthal binning of diffraction rings.    |
+    # Since APPAWA returns area fraction weights, it is assumed x0 and y0 are given in   |
+    # units of the px_len.                                                               |
+    # The point (x0,y0) is to be given with respect to the pixel-grid origin and         |
+    # corresponds to the circle origin (x0, y0).                                         |
+    #------------------------------------------------------------------------------------
+    def __init__( self, chi, x0, y0, **kwargs ): # ( self, float, float, float )
+
+        if( np.abs( chi ) > 2.*math.pi ):
+            chi = chi * ( math.pi / 180. )
+            print( "WARNING in creation of object instance AziLine: \n" +
+                   "Angle chi is likely in deg; expecting rad. \n" +
+                   "Conversion made internally, but give input as rad to suppress this warning." )
+            # TODO: might spam warnings for many instances created -> use class variable?
+        
+        self.chi = chi # Angle between positive x-direction and the line (+ = counter-clockwise)
+        self.x0  = x0  # Point around which the line rotates with the angle chi - x-coordinate
+        self.y0  = y0  # Point around which the line rotates with the angle chi - y-coordinate
+
+    def get_line( self, x, chi, x0, y0 ): # ( self, float, float, float, float )
+        #----------------------------------------------------------------------------------------------
+        # Provides the y-coordinates at x of the line rotated about the point (x0,y0) about angle chi. |
+        # ---------------------------------------------------------------------------------------------
+        if( math.isclose(np.abs(chi), math.pi/2.) ): 
+            return np.nan
+        else:
+            return y0 - ( x - x0 ) / math.tan( chi - math.pi/2. ) # See "Hesse normal form" for explanation
+
+# Classes that build on primordial classes ---
+class CircleOnGrid(PixelGrid, Circle):
+    # -------------------------------------------------------------------------------------
+    # This class considers one instance of the class PixelGrid and one of the class Circle | TODO: doesn't really make any instances, only initializes attributes
+    # and calculates where the intersections are between the two and to which pixel these  |
+    # belong to. For each pixel the fractional area weight enclosed in the circle is also  |
+    # calculated. Both the intersections and area weights are stored in a dictionary.      |
+    #--------------------------------------------------------------------------------------
+    def __init__( self, N_px, R, x0, y0 ): 
+        super().__init__( N_px=N_px, R=R, x0=x0, y0=y0 )
+
+        # Identify ROI with circle in it ---
+        ROI_ixMin  = int( (x0 - R) )
+        ROI_ixMax  = int( (x0 + R) + 0.99 ) # TODO: Could be prone to bugs, e.g. if x0+R = int+0.0001 - Is a tight ROI square absolutely necessary? 
+        ROI_x      = range( ROI_ixMin, ROI_ixMax+1 ) 
+        self.ROI_x = ROI_x
+        ROI_jyMin  = int( (y0 - R) )
+        ROI_jyMax  = int( (y0 + R) + 0.99 ) 
+        ROI_y      = range( ROI_jyMin, ROI_jyMax+1 )
+        self.ROI_y = ROI_y
+
+        # Collecting intersections and the pixels that contain them ---
+        px_intersections = {} # Dictionary = { "pixel index with an intersection": [ intersections as tuples ] }
+        for i in ROI_x: # Gathering all intersections with columns
+            y_U, y_D = Circle.get_circ( x=i, R=R, x0=x0, y0=y0 )
+
+            if( math.isclose( y_U, y_D ) ): # The pixel grid hits the circle exaclty when y_U=y_D 
+                continue                    # Ignore this, it will be caught by x_L and x_R
+
+            for y in y_U, y_D: 
+                if( np.isnan(y) ): # Skip NaNs
+                    continue
+
+                intersection = (i, y) 
+
+                yes_intersecWithRow    = ( math.isclose( y, int(y) ) )    # The intersection is at a pixel row - possible four-way intersection
+                yes_intersecCircBottom = ( math.isclose( y, ROI_y[0] ) )  # The intersection grazes the circle bottom
+                yes_intersecCircTop    = ( math.isclose( y, ROI_y[-1] ) ) # The intersection grazes the circle top
+                yes_intersecFourWay    = yes_intersecWithRow and not ( yes_intersecCircBottom or yes_intersecCircTop )
+
+                for col in 0,1: # Adding pixels right (i) and left (i-1) of the y intersection in one loop
+                    if( yes_intersecFourWay ): # Hit a full-on four-way intersection - Add diagonally adjacent pixels
+                        yes_TLorBR = ( (i-x0)*(y-y0) < 0 )
+                        px_origX = i + ( int(-col)*int(yes_TLorBR) + int(col-1)*int(1-yes_TLorBR) )
+                        px_origY = int(y) + int(-col)
+                    else:
+                        yes_needsOriginFix = yes_intersecCircTop # Don't count pixel above the circle top
+                        px_origX = i - col
+                        px_origY = int(y) - int(yes_needsOriginFix)
+                    px_orig = ( px_origX, px_origY )
+                    key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
+                    px_intersections.setdefault(key, []).append( intersection )
+            
+        for j in ROI_y: # Gathering all intersections with rows
+            x_R, x_L = Circle.get_circ( x=j, R=R, x0=y0, y0=x0 ) # Can use same formula if you switch x <-> y.
+
+            if( math.isclose( x_R, x_L ) ): # The pixel grid hits the circle exaclty when x_R=x_L
+                continue                    # Ignore this, it was caught by y_U and y_D
+
+            for x in x_L, x_R:
+                if( np.isnan(x) ): # Skip NaNs.
+                    continue
+
+                yes_intersecWithCol   = ( math.isclose( x, int(x) ) )    # The intersection is at a pixel col - possible four-way intersection
+                yes_intersecCircLeft  = ( math.isclose( x, ROI_x[0] ) )  # The intersection grazes the circle left-most tip
+                yes_intersecCircRight = ( math.isclose( x, ROI_x[-1] ) ) # The intersection grazes the circle right-most tip
+                yes_intersecFourWay   = yes_intersecWithCol and not ( yes_intersecCircLeft or yes_intersecCircRight )
+
+                if( yes_intersecFourWay ): # Caught the four-way intersections in the y-loop above 
+                    continue
+                
+                intersection = (x, j)
+
+                yes_needsOriginFix = yes_intersecCircRight # Don't count pixel to the right of the circle
+                for row in 0,1: # Adding the pixels above (j) and below (j-1) of the x intersection in one loop
+                    px_origX = int(x) - int(yes_needsOriginFix)
+                    px_origY = j - row
+                    px_orig = ( px_origX, px_origY )
+                    key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
+                    px_intersections.setdefault(key, []).append( intersection )
+
+        self.px_intersections = px_intersections
+
+        # Collecting areas ---
+        px_enclosedArea = {}
+
+        # Pixels in full interior of circle 
+        px_indicesSorted = sorted( px_intersections.keys() ) # Ensures order (i, j), (i+1, j), ..., (i, j+1), (i+1, j+1), ... 
+        px_withIntersections = [ PixelGrid.get_pixelOrigin( i, N_px=N_px ) for i in px_indicesSorted ]
+        for i in range(1,len(px_withIntersections)):
+            curr_tup = px_withIntersections[i]
+            prev_tup = px_withIntersections[i-1]
+            if( curr_tup[1]==prev_tup[1] ): # These are on the same row            
+                if( curr_tup[0] == prev_tup[0] + 1 ): # These are adjacent pixels with intersections
+                    continue
+                else:
+                    for j in range(1, curr_tup[0] - prev_tup[0] ): # All of these in between are within the circle
+                        px_within = ( prev_tup[0] + j, curr_tup[1] )
+                        key = PixelGrid.get_pixelIndex( px_within, N_px )
+                        px_enclosedArea[key] = 1. # Area is 1 a.u.²
+            else:
+                continue
+
+        # Fractional area weights 
+        # for key, val in dict_pxIntersec.items():
+        #     px_index = int(key)
+        #     px_orig = get_pixelOrigin( px_index, N_px )
+        #     assert len(val)<=4, "ERROR in classifying intersections | Found too many intersections in pixel " + key
+        #     if( len(val)==2 ):  # In most cases, there are two intersections.
+        #         area = get_areaSegment( px_orig, val[0], val[1], R, x0, y0 )
+        #     elif( len(val)==3 ): # In a rare case, you may be dead-on grazing the pixel boundary at a single point. Just ignore this point.
+        #         x_insec = [ i[0] for i in val ]
+        #         y_insec = [ i[1] for i in val ]
+        #         for i in range(len(val)):
+        #             index1 = int(i/2) # Just looping over (0,1), (0,2), (1,2)
+        #             index2 = int((i+1)/2)+1
+        #             if( type(x_insec[index1]) == type(x_insec[index2]) ): 
+        #                 area = get_areaSegment( px_orig, val[index1], val[index2], R, x0, y0 )
+        #             else:
+        #                 pass
+        #     elif( len(val)==4 ): # Experience has found that four intersections is possible. 
+        #         x_insec = [ i[0] for i in val ]
+        #         y_insec = [ i[1] for i in val ]
+        #         yes_sameIntersecX = ( len(x_insec)!=len(set(x_insec)) ) # Only one of these two
+        #         yes_sameIntersecY = ( len(y_insec)!=len(set(y_insec)) ) # should be true
+        #         assert yes_sameIntersecX != yes_sameIntersecY, "ERROR in classifying intersections | Impossible case encountered for pixel " + key
+        #         sort_along = int(yes_sameIntersecX) 
+        #         val_ordered = sorted( val, key=lambda elem:elem[ sort_along ] ) # sort along x/y if there are two intersections on the same pixel row/column
+        #         area = 0
+        #         area += get_areaSegment( px_orig, val_ordered[0], val_ordered[1], R, x0, y0 )
+        #         area += get_areaSegment( px_orig, val_ordered[2], val_ordered[3], R, x0, y0 )
+        #         area += int(yes_sameIntersecY) * np.abs( val_ordered[2][0] - val_ordered[1][0] ) + int(yes_sameIntersecX) * np.abs( val_ordered[2][1] - val_ordered[1][1] ) 
+        #     else:
+        #         print( "ERROR in classifying intersections - Expecting 2 or 4 | Pixel " + key + " has " + str(len(val)) + " intersections." )
+        #         exit()
+        #     assert(area <= 1.), "ERROR in calculating fractional area | Area is larger than 1 for pixel " + key
+        #     dict_pxAreaFrac[key] = area
+        
+        self.px_enclosedArea = px_enclosedArea
+
+def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ):
+    
+    # Create an instance ---
+    CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0)
+
+    # Collect and print intersections ---
+    px_intersections = []
+    for key, value in CoG.px_intersections.items():
+        pixel = CoG.get_pixelOrigin( int(key), N_px )
+        print( "Pixel index = ", key, "at loc ", pixel, "with intersections ", value )
+        [ px_intersections.append( value[i] ) for i in range(len(value)) ]
+    
+    # Plotting ---
+    fig, ax = plt.subplots()
+
+    x_plt = np.linspace(0, N_px, num=N_plt, endpoint=True)
+
+    # Pixel grid 
+    [ ax.vlines( x=i, ymin=0, ymax=N_px, color="gray", ls="--" ) for i in CoG.grid_sq ]
+    [ ax.hlines( y=i, xmin=0, xmax=N_px, color="gray", ls="--" ) for i in CoG.grid_sq ]
+
+    # ROI highlight 
+    [ ax.vlines( x=CoG.ROI_x[i], ymin=CoG.ROI_y[0], ymax=CoG.ROI_y[-1], color="k" ) for i in range(len(CoG.ROI_x)) ]
+    [ ax.hlines( y=CoG.ROI_y[i], xmin=CoG.ROI_x[0], xmax=CoG.ROI_x[-1], color="k" ) for i in range(len(CoG.ROI_y)) ]
+
+    # Circle 
+    y_circle = [ CoG.get_circ( i, R, x0, y0 ) for i in x_plt ]
+    y_upper = [ i[0] for i in y_circle ]
+    y_lower = [ i[1] for i in y_circle ]
+    ax.plot(x_plt, y_upper, color="tab:blue")
+    ax.plot(x_plt, y_lower, color="tab:blue")
+
+    # Intersections between grid and circle 
+    for i in range(len(px_intersections)):
+        ax.plot( px_intersections[i][0], px_intersections[i][1], "x", color="tab:orange" )
+
+    plt.show()
+    return 
+
+N_px = 10
+R = 2.
+x0 = 5
+y0 = 5
+
+check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
+
+# CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0)
+# print(CoG.ROI_x)
+exit()
 
 # Functions =======================================================================================
 # Pixel-grid related ---
@@ -42,7 +326,7 @@ def circ( x, R, x0, y0 ):
     # Provides the y-coordinates at x of       |
     # a circle at origin (x0,y0) and radius R. |
     # -----------------------------------------
-    y_pos = (R**2. - ( x-x0 )**2.)**0.5 + y0
+    y_pos = ( R**2. - ( x - x0 )**2. )**0.5 + y0
     y_neg = -(R**2. - ( x-x0 )**2.)**0.5 + y0
     return y_pos, y_neg
 
@@ -207,6 +491,7 @@ def Line( x, chi, x0, y0 ):
         return y0 - ( x - x0 ) / math.tan( chi-math.pi/2. )
 
 def intersec_LineX( chi, x0, y0, px_y ): # px_y = integer denoting the row of the lower-left corner of the pixel
+    # Same as intersec_LineY with y0 -> x0, px_x -> px_y, x0 -> y0, chi -> pi/2 - chi
     if( math.isclose(np.abs(chi), math.pi) ): # If the Line is vertical, it intersects the row px_y at px_y
         return px_y
     else:
