@@ -92,13 +92,14 @@ class AziLine():
             print( "WARNING in creation of object instance AziLine: \n" +
                    "Angle chi is likely in deg; expecting rad. \n" +
                    "Conversion made internally, but give input as rad to suppress this warning." )
-            # TODO: might spam warnings for many instances created -> use class variable?
+            # TODO: might spam warnings for many instances created -> use class variable? -> How?
         
         self.chi = chi # Angle between positive x-direction and the line (+ = counter-clockwise)
         self.x0  = x0  # Point around which the line rotates with the angle chi - x-coordinate
         self.y0  = y0  # Point around which the line rotates with the angle chi - y-coordinate
 
-    def get_line( self, x, chi, x0, y0 ): # ( self, float, float, float, float )
+    @classmethod
+    def get_line( cls, x, chi, x0, y0 ): # ( cls, float, float, float, float )
         #----------------------------------------------------------------------------------------------
         # Provides the y-coordinates at x of the line rotated about the point (x0,y0) about angle chi. |
         # ---------------------------------------------------------------------------------------------
@@ -139,29 +140,38 @@ class CircleOnGrid(PixelGrid, Circle):
         return Area_MC
     
     @classmethod
-    def Integral_curvedSegment( cls, x, R, x0, y0, px_line, yes_flipXY=False ):
-        # -------------------------------------------------------------------------------
-        # Note: for this explanation, pretend px_line = px_y = px_origin row (*)         |
-        # Analytical solution of the integral                                            |   
-        # int dx [ sqrt( R² - (x-x0)² ) + (y0 - px_line) ]                               |  
-        # ( + constant omitted )                                                         |
-        # Area enclosed in pixel at (px_x, px_y) between x=x1 and x=x2 is I(x2) - I(x1), |
-        # where I(x) = Integral_curvedSegment( x, R, x0, y0, px_line )                   |
-        #                                                                                |
-        # (*) yes_flipXY=True calculates the area for a pixel that is difficult to       |
-        # handle as is, but which is easier if one does x <-> y.                         |
-        # In that case px_line = px_x = px_origin col, but the integral stays the same.  |
-        # -------------------------------------------------------------------------------
-        # x0, y0 = x0 * int(1-int(yes_flipXY)) + y0 * int(yes_flipXY), x0 * int(yes_flipXY) + y0 * int(1-int(yes_flipXY))
-        if( yes_flipXY ):
-            x0, y0 = y0, x0
+    def Integral_curvedSegment( cls, x, R, x0, y0, px_line, yes_flipXY=False ): # ( cls, float, float, float, int, bool )
+        # -----------------------------------------------------------------------------------------
+        # Analytical solution of the integral                                                      |   
+        #          / int dx' { [ sqrt( R² - (x'-x0)² ) + y0 ] - px_line }; if px_line >= y0,       |
+        #   F(x) =                                                                                 |
+        #          \ int dx' { (px_line + 1) - [ -sqrt( R² - (x'-x0)² ) + y0 ] }; if px_line < y0, |
+        #            = int dx' { sqrt( R² - (x'-x0)² ) + px_line + 1 - y0 }                        |
+        # -----------------------------------------------------------------------------------------
+        # Allows to calculate the area enclosed by the circle within the pixel defined by          |
+        #   px_line = px_origin row                                                                |
+        # Area enclosed in pixel between x=x1 and x=x2 is F(x2) - F(x1), where                     |
+        #   F(x) = Integral_curvedSegment( x, R, x0, y0, px_line )                                 |
+        # -----------------------------------------------------------------------------------------
+        # It is possible that the line y=y0 lies somewhere inside the pixel. In that case, the     |
+        #   integral should technically be cut into two pieces, because the integrand is different |
+        #   for x' values that result in the integrand being above or below y0.                    |
+        # Instead of doing this, we implemented the boolean yes_flipXY, which, if True,            |
+        #   switches x <-> y. In that case, px_line = px_origin col (make sure you did this), but  |
+        #   this way the integrand does not change over the integration range.                     |
+        # -----------------------------------------------------------------------------------------
+        if( yes_flipXY ): x0, y0 = y0, x0
         yes_bottomHalf = (px_line < int(y0)) 
         term1 = ( (x-x0) * ( R**2. - (x-x0)**2. )**0.5 + R**2. * np.asin( (x-x0) / R ) ) / 2.
         term2 = (-1.)**int(yes_bottomHalf) * x * ( y0 - px_line - int(yes_bottomHalf) )
         return term1 + term2
     
-    @classmethod
-    def get_areaSegment( cls, px_orig, intersec1, intersec2, R, x0, y0 ):
+    @classmethod 
+    def get_areaSegment( cls, px_orig, intersec1, intersec2, R, x0, y0 ): # ( cls, (int, int), (float, float), (flaot, float), float, float, float )
+        # --------------------------------------------------------------
+        # Calculates the enclosed area by the circle within the pixel   |
+        # between the intersections intersec1 and intersec2.            |
+        # --------------------------------------------------------------
         px_x, px_y = px_orig
         x1, y1 = intersec1
         x2, y2 = intersec2
@@ -187,7 +197,9 @@ class CircleOnGrid(PixelGrid, Circle):
             yes_flip = True # Needed in the integral to flip x0 and y0
         else: 
             print( "ERROR in get_areaSegment | Impossible case encountered for pixel at origin " + px_orig )
-        area = CircleOnGrid.Integral_curvedSegment( x2, R, x0, y0, px_line, yes_flip ) - CircleOnGrid.Integral_curvedSegment( x1, R, x0, y0, px_line, yes_flip )
+            exit()
+        area  = CircleOnGrid.Integral_curvedSegment( x2, R, x0, y0, px_line, yes_flip ) 
+        area -= CircleOnGrid.Integral_curvedSegment( x1, R, x0, y0, px_line, yes_flip )
 
         # If two opposite corners are confined to the circle, we are missing a little rectangular block, added here.
         yes_twoCornersInCirc1 = ((px_x-x0)**2. + (px_y-y0)**2. < R**2.) and ((px_x+1-x0)**2. + (px_y+1-y0)**2. < R**2.)
@@ -339,8 +351,13 @@ class CircleOnGrid(PixelGrid, Circle):
         
         self.px_enclosedArea = px_enclosedArea
 
-    
-def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ):
+class AziLineOnGrid(PixelGrid, AziLine): 
+    def __init__( self, N_px, chi, x0, y0 ): 
+        super().__init__( N_px=N_px, chi=chi, x0=x0, y0=y0 ) # Initialize parent attributes (does not make instances)
+
+
+# Functions designed for development checks ==========
+def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ): # ( int, float, float, float, int )
     
     # Create an instance ---
     CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0)
@@ -433,10 +450,8 @@ x0 = 5
 y0 = 5
 
 # check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
+check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
 
-check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0)
-# CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0)
-# print(CoG.ROI_x)
 exit()
 
 # Functions =======================================================================================
