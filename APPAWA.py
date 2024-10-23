@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import math
 import time
 
-# Primordial classes that need no building blocks, only input parameters ---
+# Primordial classes that need no building blocks, only input parameters ==========
 class PixelGrid():
     # -----------------------------------------------------------------------------
     # This class defines the square pixel grid and contains all of its properties. |
@@ -107,16 +107,103 @@ class AziLine():
         else:
             return y0 - ( x - x0 ) / math.tan( chi - math.pi/2. ) # See "Hesse normal form" for explanation
 
-# Classes that build on primordial classes ---
+# Classes that build on primordial classes ==========
 class CircleOnGrid(PixelGrid, Circle):
     # -------------------------------------------------------------------------------------
     # This class considers one instance of the class PixelGrid and one of the class Circle | TODO: doesn't really make any instances, only initializes attributes
     # and calculates where the intersections are between the two and to which pixel these  |
     # belong to. For each pixel the fractional area weight enclosed in the circle is also  |
-    # calculated. Both the intersections and area weights are stored in a dictionary.      |
+    # calculated. The intersections and area weights are stored in separate dictionaries.  |
     #--------------------------------------------------------------------------------------
+    @classmethod
+    def get_enclosedAreaMC( cls, px_orig, R, x0, y0, N_MC=10000 ): # ( cls, (int, int), float, float, float, int )
+        # ------------------------------------------------------------------------
+        # Numerical Monte Carlo integration of the area enclosed by               |
+        # a circle at origin (x0, y0) and radius R and                            |
+        # a pixel at origin px_orig denoting the lower-left corner of the pixel.  |
+        # All lengths are normalized to a pixel length value.                     |
+        # Therefore, the result is the fraction of the pixel area being enclosed. |
+        # ------------------------------------------------------------------------
+        px_x, px_y = px_orig
+        x_rand = np.random.uniform(px_x, px_x + 1, N_MC)
+        y_rand = np.random.uniform(px_y, px_y + 1, N_MC)
+        sum_enclosedByCurve = 0
+        for i in range(len(x_rand)):
+            if( y_rand[i] >= y0 ):
+                enclosed_ByCurve = ( y_rand[i] <= CircleOnGrid.get_circ(x_rand[i], R, x0, y0)[0] ) # [0] = circle y values >= y0
+            else:
+                enclosed_ByCurve = ( y_rand[i] > CircleOnGrid.get_circ(x_rand[i], R, x0, y0)[1] )  # [1] = circle y values < y0
+            sum_enclosedByCurve += enclosed_ByCurve
+        Area_px = 1.**2. # Assuming normalized pixel length throughout
+        Area_MC = sum_enclosedByCurve * Area_px / N_MC
+        return Area_MC
+    
+    @classmethod
+    def Integral_curvedSegment( cls, x, R, x0, y0, px_line, yes_flipXY=False ):
+        # -------------------------------------------------------------------------------
+        # Note: for this explanation, pretend px_line = px_y = px_origin row (*)         |
+        # Analytical solution of the integral                                            |   
+        # int dx [ sqrt( R² - (x-x0)² ) + (y0 - px_line) ]                               |  
+        # ( + constant omitted )                                                         |
+        # Area enclosed in pixel at (px_x, px_y) between x=x1 and x=x2 is I(x2) - I(x1), |
+        # where I(x) = Integral_curvedSegment( x, R, x0, y0, px_line )                   |
+        #                                                                                |
+        # (*) yes_flipXY=True calculates the area for a pixel that is difficult to       |
+        # handle as is, but which is easier if one does x <-> y.                         |
+        # In that case px_line = px_x = px_origin col, but the integral stays the same.  |
+        # -------------------------------------------------------------------------------
+        # x0, y0 = x0 * int(1-int(yes_flipXY)) + y0 * int(yes_flipXY), x0 * int(yes_flipXY) + y0 * int(1-int(yes_flipXY))
+        if( yes_flipXY ):
+            x0, y0 = y0, x0
+        yes_bottomHalf = (px_line < int(y0)) 
+        term1 = ( (x-x0) * ( R**2. - (x-x0)**2. )**0.5 + R**2. * np.asin( (x-x0) / R ) ) / 2.
+        term2 = (-1.)**int(yes_bottomHalf) * x * ( y0 - px_line - int(yes_bottomHalf) )
+        return term1 + term2
+    
+    @classmethod
+    def get_areaSegment( cls, px_orig, intersec1, intersec2, R, x0, y0 ):
+        px_x, px_y = px_orig
+        x1, y1 = intersec1
+        x2, y2 = intersec2
+
+        yes_intersecTwoRows = ( type(y1)==int and type(y2)==int and max(y1,y2)-min(y1,y2)==1 )
+        yes_intersecDoubleCol = ( type(x1)==int and type(x2)==int and x1==x2 and np.abs(y2-y1)<1 )
+        yes_y0ThroughPixel = ( min(y1,y2) < y0 and max(y1,y2) > y0)
+        yes_integrateAfterFlip = yes_intersecTwoRows or yes_intersecDoubleCol or yes_y0ThroughPixel
+
+        yes_integrateNormally = not yes_integrateAfterFlip
+
+        if( yes_integrateNormally ): 
+            insec1, insec2 = sorted( [ intersec1, intersec2 ], key=lambda elem:elem[0] ) # sort along x-coordinate
+            x1, y1 = insec1
+            x2, y2 = insec2
+            px_line = px_y
+            yes_flip = False
+        elif( yes_integrateAfterFlip ): # flip x and y to just use the same integral 
+            insec1, insec2 = sorted( [ intersec1, intersec2 ], key=lambda elem:elem[1] ) # sort along y-coordinate
+            y1, x1 = insec1 # flip x & y
+            y2, x2 = insec2
+            px_line = px_x
+            yes_flip = True # Needed in the integral to flip x0 and y0
+        else: 
+            print( "ERROR in get_areaSegment | Impossible case encountered for pixel at origin " + px_orig )
+        area = CircleOnGrid.Integral_curvedSegment( x2, R, x0, y0, px_line, yes_flip ) - CircleOnGrid.Integral_curvedSegment( x1, R, x0, y0, px_line, yes_flip )
+
+        # If two opposite corners are confined to the circle, we are missing a little rectangular block, added here.
+        yes_twoCornersInCirc1 = ((px_x-x0)**2. + (px_y-y0)**2. < R**2.) and ((px_x+1-x0)**2. + (px_y+1-y0)**2. < R**2.)
+        yes_twoCornersInCirc2 = ((px_x+1-x0)**2. + (px_y-y0)**2. < R**2.) and ((px_x-x0)**2. + (px_y+1-y0)**2. < R**2.)
+        yes_missingBlock = yes_twoCornersInCirc1 or yes_twoCornersInCirc2
+        block = 0
+        if( yes_missingBlock ):
+            yes_rightOfx0 = ( type(x1)!=int )
+            xc = x1 * int( yes_rightOfx0 ) + x2 * int( 1-yes_rightOfx0 )
+            block = (-1.)**int( 1-yes_rightOfx0 ) * (xc - px_x) + int( 1-yes_rightOfx0 )
+        area += block
+
+        return area
+
     def __init__( self, N_px, R, x0, y0 ): 
-        super().__init__( N_px=N_px, R=R, x0=x0, y0=y0 )
+        super().__init__( N_px=N_px, R=R, x0=x0, y0=y0 ) # Initialize parent attributes (does not make instances)
 
         # Identify ROI with circle in it ---
         ROI_ixMin  = int( (x0 - R) )
@@ -149,7 +236,7 @@ class CircleOnGrid(PixelGrid, Circle):
 
                 for col in 0,1: # Adding pixels right (i) and left (i-1) of the y intersection in one loop
                     if( yes_intersecFourWay ): # Hit a full-on four-way intersection - Add diagonally adjacent pixels
-                        yes_TLorBR = ( (i-x0)*(y-y0) < 0 )
+                        yes_TLorBR = ( (i-x0)*(y-y0) < 0 ) # Top left or bottom right quadrant have pixels like / (TR and BL like \)
                         px_origX = i + ( int(-col)*int(yes_TLorBR) + int(col-1)*int(1-yes_TLorBR) )
                         px_origY = int(y) + int(-col)
                     else:
@@ -211,42 +298,48 @@ class CircleOnGrid(PixelGrid, Circle):
                 continue
 
         # Fractional area weights 
-        # for key, val in dict_pxIntersec.items():
-        #     px_index = int(key)
-        #     px_orig = get_pixelOrigin( px_index, N_px )
-        #     assert len(val)<=4, "ERROR in classifying intersections | Found too many intersections in pixel " + key
-        #     if( len(val)==2 ):  # In most cases, there are two intersections.
-        #         area = get_areaSegment( px_orig, val[0], val[1], R, x0, y0 )
-        #     elif( len(val)==3 ): # In a rare case, you may be dead-on grazing the pixel boundary at a single point. Just ignore this point.
-        #         x_insec = [ i[0] for i in val ]
-        #         y_insec = [ i[1] for i in val ]
-        #         for i in range(len(val)):
-        #             index1 = int(i/2) # Just looping over (0,1), (0,2), (1,2)
-        #             index2 = int((i+1)/2)+1
-        #             if( type(x_insec[index1]) == type(x_insec[index2]) ): 
-        #                 area = get_areaSegment( px_orig, val[index1], val[index2], R, x0, y0 )
-        #             else:
-        #                 pass
-        #     elif( len(val)==4 ): # Experience has found that four intersections is possible. 
-        #         x_insec = [ i[0] for i in val ]
-        #         y_insec = [ i[1] for i in val ]
-        #         yes_sameIntersecX = ( len(x_insec)!=len(set(x_insec)) ) # Only one of these two
-        #         yes_sameIntersecY = ( len(y_insec)!=len(set(y_insec)) ) # should be true
-        #         assert yes_sameIntersecX != yes_sameIntersecY, "ERROR in classifying intersections | Impossible case encountered for pixel " + key
-        #         sort_along = int(yes_sameIntersecX) 
-        #         val_ordered = sorted( val, key=lambda elem:elem[ sort_along ] ) # sort along x/y if there are two intersections on the same pixel row/column
-        #         area = 0
-        #         area += get_areaSegment( px_orig, val_ordered[0], val_ordered[1], R, x0, y0 )
-        #         area += get_areaSegment( px_orig, val_ordered[2], val_ordered[3], R, x0, y0 )
-        #         area += int(yes_sameIntersecY) * np.abs( val_ordered[2][0] - val_ordered[1][0] ) + int(yes_sameIntersecX) * np.abs( val_ordered[2][1] - val_ordered[1][1] ) 
-        #     else:
-        #         print( "ERROR in classifying intersections - Expecting 2 or 4 | Pixel " + key + " has " + str(len(val)) + " intersections." )
-        #         exit()
-        #     assert(area <= 1.), "ERROR in calculating fractional area | Area is larger than 1 for pixel " + key
-        #     dict_pxAreaFrac[key] = area
+        for key, val in px_intersections.items():
+            px_orig = PixelGrid.get_pixelOrigin( key, N_px )
+
+            if( len(val) <=1 or len(val) > 4 ): # Number of intersections should be 2, 3 or 4
+                raise AssertionError( "ERROR in classifying intersections | Pixel " + str(key) + " has " + str(len(val)) + " intersections." )
+
+            if( len(val)==2 ): # In most cases, there are two intersections
+                area = CircleOnGrid.get_areaSegment( px_orig, val[0], val[1], R, x0, y0 )
+            elif( len(val)==3 ): # In a rare case, you may be grazing the pixel boundary at a single point. Just ignore this point.
+                x_insec = [ i[0] for i in val ]
+                y_insec = [ i[1] for i in val ]
+                for i in range(len(val)):
+                    index1 = int(i/2) # Just looping over (0,1), (0,2), (1,2)
+                    index2 = int((i+1)/2)+1
+                    if( type(x_insec[index1]) == type(x_insec[index2]) ): 
+                        area = CircleOnGrid.get_areaSegment( px_orig, val[index1], val[index2], R, x0, y0 )
+                    else:
+                        pass
+            elif( len(val)==4 ): # Experience has found that four intersections is possible
+                x_insec = [ i[0] for i in val ]
+                y_insec = [ i[1] for i in val ]
+                yes_sameIntersecX = ( len(x_insec)!=len(set(x_insec)) ) # Only one of these two
+                yes_sameIntersecY = ( len(y_insec)!=len(set(y_insec)) ) # should be true
+                if( yes_sameIntersecX != yes_sameIntersecY):
+                    raise AssertionError( "ERROR in classifying intersections | Impossible case encountered for pixel " + str(key) )
+                sort_along = int(yes_sameIntersecX) 
+                val_ordered = sorted( val, key=lambda elem:elem[ sort_along ] ) # sort along x/y if there are two intersections on the same pixel row/column
+                area = 0
+                area += CircleOnGrid.get_areaSegment( px_orig, val_ordered[0], val_ordered[1], R, x0, y0 )
+                area += CircleOnGrid.get_areaSegment( px_orig, val_ordered[2], val_ordered[3], R, x0, y0 )
+                area += int(yes_sameIntersecY) * np.abs( val_ordered[2][0] - val_ordered[1][0] ) + int(yes_sameIntersecX) * np.abs( val_ordered[2][1] - val_ordered[1][1] ) 
+            else:
+                raise AssertionError( "ERROR in classifying intersections | Pixel " + str(key) + " has " + str(len(val)) + " intersections." )
+
+            if (area > 1.):
+                raise AssertionError( "ERROR in calculating fractional area | Area is larger than 1 for pixel " + str(key) )
+
+            px_enclosedArea[key] = area
         
         self.px_enclosedArea = px_enclosedArea
 
+    
 def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ):
     
     # Create an instance ---
@@ -286,13 +379,62 @@ def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ):
     plt.show()
     return 
 
+def check_CoGAreas( N_px, R, x0, y0, yes_MC=False, px_orig=None, N_MC=10000, yes_verbose=False ): # ( int, float, float, float, bool, (int, int), int, bool )
+
+    # Create an instance ---
+    t0  = time.time()
+    CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0)
+    ans = sum( CoG.px_enclosedArea.values() )
+    t1  = time.time()
+    t_algo = t1 - t0
+
+    # Analytical answer
+    t0 = time.time()
+    goal = math.pi * R**2.
+    t1 = time.time()
+    t_anal = t1- t0
+
+    print( "The analytical closed-form answer is: ", goal, " and took ", t_anal, " sec to calculate" )
+    print( "The analytical algorithmic answer is: ", ans , " and took ", t_algo, " sec to calculate" )
+
+    # Monte Carlo approximation ---
+    if( yes_MC ):
+        t0 = time.time()
+        CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0) # Create another instance for fair time comparison
+        if( px_orig != None ): 
+            key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
+            area_CoG = CoG.get_enclosedAreaMC[key]
+            area_MC  = CircleOnGrid.get_enclosedAreaMC( px_orig=px_orig, R=R, x0=x0, y0=y0, N_MC=N_MC )
+            rel = ( 1. - np.abs( area_MC - area_CoG )/ area_MC )*100
+            print( "The enclosed area of pixel ", key, " at location ", px_orig, "is:" )
+            print( "  - Analytical algorithm: ", area_CoG )
+            print( "  - Monte Carlo approxim: ", area_MC, " using ", N_MC, "points" )
+            print( "  - Relative accuracy[%]: ", rel )
+        else:
+            total_MC = 0.
+            i=0
+            for key in CoG.px_enclosedArea.keys():
+                px_orig = PixelGrid.get_pixelOrigin( px_index=key, N_px=N_px )
+                total_MC += CircleOnGrid.get_enclosedAreaMC( px_orig=px_orig, R=R, x0=x0, y0=y0, N_MC=N_MC )
+                if( yes_verbose ):
+                    i+=1
+                    print( "Finished with pixel", i, " out of ", len(CoG.px_enclosedArea.keys()) )
+            t1 = time.time()
+            t_MC = t1 - t0
+            print( "The total enclosed area is:" )
+            print( "  - Analytical form:      ", goal, " and took ", t_anal, " sec to calculate" )
+            print( "  - Analytical algorithm: ", ans, " and took ", t_algo, " sec to calculate" )
+            print( "  - Monte Carlo approxim: ", total_MC, " and took ", t_MC, " sec to calculate using ", N_MC, "points" )
+    return
+
 N_px = 10
 R = 2.
 x0 = 5
 y0 = 5
 
-check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
+# check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
 
+check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0)
 # CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0)
 # print(CoG.ROI_x)
 exit()
