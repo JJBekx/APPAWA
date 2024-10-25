@@ -12,6 +12,26 @@ import matplotlib.pyplot as plt
 import math
 import time
 
+# class Animal():
+#     def __init__(self, race, **kwargs):
+#         self.race=race
+#         self.extra=race + "rasputin"
+
+# class Friend():
+#     def __init__(self, name, **kwargs):
+#         self.name=name
+
+# class Dog(Animal, Friend):
+#     def __init__(self, race, name, breed):
+#         super().__init__(race=race, name=name)
+#         self.breed=breed
+#         test = super(Animal, self).__getattribute__("extra")
+#         print("Hekko", test)
+
+# d = Dog(race="dog", name="Fido", breed="Bernese Mt. Dog")
+# # print( d.race, d.name, d.breed, d.extra )
+# exit()
+
 # Primordial classes that need no building blocks, only input parameters ==========
 class PixelGrid():
     # -----------------------------------------------------------------------------
@@ -106,7 +126,7 @@ class AziLine():
         if( math.isclose(np.abs(chi), math.pi/2.) ): 
             return np.nan
         else:
-            return y0 - ( x - x0 ) / math.tan( chi - math.pi/2. ) # See "Hesse normal form" for explanation
+            return y0 + ( x - x0 ) * math.tan( chi ) # See "Hesse normal form" for explanation
 
 # Classes that build on primordial classes ==========
 class CircleOnGrid(PixelGrid, Circle):
@@ -352,9 +372,73 @@ class CircleOnGrid(PixelGrid, Circle):
         self.px_enclosedArea = px_enclosedArea
 
 class AziLineOnGrid(PixelGrid, AziLine): 
+    #BUG: still ahs pixel idnex assigment outside the pixel grid
     def __init__( self, N_px, chi, x0, y0 ): 
         super().__init__( N_px=N_px, chi=chi, x0=x0, y0=y0 ) # Initialize parent attributes (does not make instances)
 
+        yes_ascendingLine  = (chi >= 0. and chi < math.pi/2.) or (chi >= math.pi and chi < 3.*math.pi/2.) # no chi < 0
+        yes_descendingLine = not yes_ascendingLine # BUG is this chi or self.chi? i.e., what if someone fills in 183 deg?
+
+        # Collecting intersections and the pixels that contain them ---
+        px_intersections = {} # Dictionary = { "pixel index with an intersection": [ intersections as tuples ] }
+        grid_sq = super(PixelGrid, self).__getattribute__("grid_sq")
+        for i in grid_sq: # Gathering all intersections with columns
+            y = AziLine.get_line( x=i, chi=chi, x0=x0, y0=y0 )
+
+            if( np.isnan(y) ): # Skip NaNs
+                continue
+
+            if( y < 0 or y > N_px ): # Skip intersections outside of pixel grid
+                continue
+
+            intersection = (i, y) 
+
+            yes_intersecWithRow    = ( math.isclose( y, int(y) ) )    # The intersection is at a pixel row - possible four-way intersection
+            yes_intersecGridBottom = ( math.isclose( y, grid_sq[0] ) )  # The intersection hits the pixel grid bottom
+            yes_intersecGridTop    = ( math.isclose( y, grid_sq[-1] ) ) # The intersection hits the pixel grid top
+            yes_intersecFourWay    = yes_intersecWithRow and not ( yes_intersecGridBottom or yes_intersecGridTop )
+
+            for col in 0,1: # Adding pixels right (i) and left (i-1) of the y intersection in one loop
+                if( yes_intersecFourWay ): # Hit a full-on four-way intersection - Add diagonally adjacent pixels
+                    px_origX = i + ( int(-col)*int(yes_ascendingLine) + int(col-1)*int(yes_descendingLine) )
+                    px_origY = int(y) + int(-col)
+                else:
+                    yes_needsOriginFix = yes_intersecGridTop # Don't count pixel outside the gird
+                    px_origX = i - col
+                    px_origY = int(y) - int(yes_needsOriginFix)
+                px_orig = ( px_origX, px_origY )
+                key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
+                px_intersections.setdefault(key, []).append( intersection )
+            
+        for j in grid_sq: # Gathering all intersections with rows
+            x = AziLine.get_line( x=j, chi=math.pi/2.-chi, x0=y0, y0=x0 ) # Can use same formula if you switch x <-> y.
+            # Switch x <-> equivalent to chi -> pi/2 - chi, x0 -> y0, y0 -> x0
+
+            if( np.isnan(x) ): # Skip NaNs.
+                continue
+
+            if( x < 0 or x > N_px ): # Skip intersections outside of pixel grid
+                continue
+
+            yes_intersecWithCol   = ( math.isclose( x, int(x) ) )    # The intersection is at a pixel col - possible four-way intersection
+            yes_intersecGridLeft  = ( math.isclose( x, grid_sq[0] ) )  # The intersection grazes the circle left-most tip
+            yes_intersecGridRight = ( math.isclose( x, grid_sq[-1] ) ) # The intersection grazes the circle right-most tip
+            yes_intersecFourWay   = yes_intersecWithCol and not ( yes_intersecGridLeft or yes_intersecGridRight )
+
+            if( yes_intersecFourWay ): # Caught the four-way intersections in the y-loop above 
+                continue
+            
+            intersection = (x, j)
+
+            yes_needsOriginFix = yes_intersecGridRight # Don't count pixel to the right of the circle
+            for row in 0,1: # Adding the pixels above (j) and below (j-1) of the x intersection in one loop
+                px_origX = int(x) - int(yes_needsOriginFix)
+                px_origY = j - row
+                px_orig = ( px_origX, px_origY )
+                key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
+                px_intersections.setdefault(key, []).append( intersection )
+
+        self.px_intersections = px_intersections
 
 # Functions designed for development checks ==========
 def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ): # ( int, float, float, float, int )
@@ -444,13 +528,51 @@ def check_CoGAreas( N_px, R, x0, y0, yes_MC=False, px_orig=None, N_MC=10000, yes
             print( "  - Monte Carlo approxim: ", total_MC, " and took ", t_MC, " sec to calculate using ", N_MC, "points" )
     return
 
+def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000 +1 ): # ( int, float, float, float, int )
+    
+    # Create an instance ---
+    ALoG = AziLineOnGrid(N_px=N_px, chi=chi, x0=x0, y0=y0)
+    
+    # Collect and print intersections ---
+    px_intersections = []
+    for key, value in ALoG.px_intersections.items():
+        pixel = ALoG.get_pixelOrigin( int(key), N_px )
+        print( "Pixel index = ", key, "at loc ", pixel, "with intersections ", value )
+        [ px_intersections.append( value[i] ) for i in range(len(value)) ]
+    
+    # Plotting ---
+    fig, ax = plt.subplots()
+
+    x_plt = np.linspace(0, N_px, num=N_plt, endpoint=True)
+
+    # Pixel grid 
+    [ ax.vlines( x=i, ymin=0, ymax=N_px, color="gray", ls="--" ) for i in ALoG.grid_sq ]
+    [ ax.hlines( y=i, xmin=0, xmax=N_px, color="gray", ls="--" ) for i in ALoG.grid_sq ]
+
+    # Line center and angle highlight 
+    ax.plot(x0, y0, "bo")
+    ax.hlines( y=y0, xmin=0, xmax=N_px, color="k", ls="--" )
+
+    # Line 
+    y_line = [ ALoG.get_line( i, chi, x0, y0 ) for i in x_plt ]
+    ax.plot(x_plt, y_line, color="tab:blue")
+
+    # Intersections between grid and circle 
+    for i in range(len(px_intersections)):
+        ax.plot( px_intersections[i][0], px_intersections[i][1], "x", color="tab:orange" )
+
+    plt.show()
+    return 
+
 N_px = 10
 R = 2.
 x0 = 5
 y0 = 5
 
 # check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
-check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
+# check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
+
+check_ALoGIntersections( N_px=N_px, chi=math.pi/3., x0=x0, y0=y0 )
 
 exit()
 
