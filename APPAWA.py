@@ -106,7 +106,8 @@ class AziLine():
         #----------------------------------------------------------------------------------------------
         # Provides the y-coordinates at x of the line rotated about the point (x0,y0) about angle chi. |
         # ---------------------------------------------------------------------------------------------
-        if( math.isclose(np.abs(chi), math.pi/2.) ): 
+        yes_verticalLine   = ( math.isclose(chi,math.pi/2.) or math.isclose(chi,3.*math.pi/2.) )
+        if( yes_verticalLine ): 
             return np.nan
         else:
             return y0 + ( x - x0 ) * math.tan( chi ) # See "Hesse normal form" for explanation
@@ -405,6 +406,9 @@ class AziLineOnGrid(PixelGrid, AziLine):
 
         yes_ascendingLine  = (chi >= 0. and chi < math.pi/2.) or (chi >= math.pi and chi < 3.*math.pi/2.) # no chi < 0
         yes_descendingLine = not yes_ascendingLine # BUG this is chi, not AziLine.chi. Error if someone fills in 183 deg
+        # yes_horizontalLine = math.isclose( np.abs(chi%math.pi), 0. )
+        yes_horizontalLine = ( math.isclose(chi,0.) or math.isclose(chi,math.pi) )
+        yes_verticalLine   = ( math.isclose(chi,math.pi/2.) or math.isclose(chi,3.*math.pi/2.) )
 
         # Collecting intersections and the pixels that contain them ---
         px_intersections = {} # Dictionary = { "pixel index with an intersection": [ intersections as tuples ] }
@@ -420,20 +424,20 @@ class AziLineOnGrid(PixelGrid, AziLine):
 
             intersection = (i, y) 
 
-            yes_intersecWithRow    = ( math.isclose( y, int(y) ) )      # The intersection is at a pixel row - possible four-way intersection
-            yes_intersecGridBottom = ( math.isclose( y, grid_sq[0] ) )  # The intersection hits the pixel grid bottom
-            yes_intersecGridTop    = ( math.isclose( y, grid_sq[-1] ) ) # The intersection hits the pixel grid top
+            yes_intersecWithRow    = ( math.isclose( y, int(np.rint(y)) ) ) # The intersection is at a pixel row - possible four-way intersection
+            yes_intersecGridBottom = ( math.isclose( y, grid_sq[0] ) )      # The intersection hits the pixel grid bottom
+            yes_intersecGridTop    = ( math.isclose( y, grid_sq[-1] ) )     # The intersection hits the pixel grid top
             yes_intersecFourWay    = yes_intersecWithRow and not ( yes_intersecGridBottom or yes_intersecGridTop )
 
             for col in 0,1: # Adding pixels right (i) and left (i-1) of the y intersection in one loop
-                if( yes_intersecFourWay ): # Hit a full-on four-way intersection - Add diagonally adjacent pixels
+                if( yes_intersecFourWay ): # Hit a full-on four-way intersection - Add diagonally adjacent pixels...
                     px_origX = i + ( int(-col)*int(yes_ascendingLine) + int(col-1)*int(yes_descendingLine) )
-                    px_origY = int(y) + int(-col)
+                    px_origY = int(np.rint(y)) + int(-col) * int(1-yes_horizontalLine) #..unless the line is horizontal, then add pixels left and right.
                 else:
-                    yes_needsOriginFix = yes_intersecGridTop # Don't count pixel outside the gird
+                    yes_needsOriginFix = yes_intersecGridTop # Don't count pixel outside the grid
                     px_origX = i - col
                     px_origY = int(y) - int(yes_needsOriginFix)
-                if( px_origX < 0 or px_origX >= N_px ) : continue # Don't add "pixels" outside the grid
+                if( px_origX < 0 or px_origX >= N_px ): continue # Don't add "pixels" outside the grid
                 px_orig = ( px_origX, px_origY )
                 key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
                 px_intersections.setdefault(key, []).append( intersection )
@@ -449,19 +453,19 @@ class AziLineOnGrid(PixelGrid, AziLine):
             if( x < 0 or x > N_px ): # Skip intersections outside of pixel grid
                 continue
 
-            yes_intersecWithCol   = ( math.isclose( x, int(x) ) )    # The intersection is at a pixel col - possible four-way intersection
-            yes_intersecGridLeft  = ( math.isclose( x, grid_sq[0] ) )  # The intersection hits the grid on the left
-            yes_intersecGridRight = ( math.isclose( x, grid_sq[-1] ) ) # The intersection hits the grid on the right
+            yes_intersecWithCol   = ( math.isclose( x, int(np.rint(x)) ) ) # The intersection is at a pixel col - possible four-way intersection
+            yes_intersecGridLeft  = ( math.isclose( x, grid_sq[0] ) )      # The intersection hits the grid on the left
+            yes_intersecGridRight = ( math.isclose( x, grid_sq[-1] ) )     # The intersection hits the grid on the right
             yes_intersecFourWay   = yes_intersecWithCol and not ( yes_intersecGridLeft or yes_intersecGridRight )
 
-            if( yes_intersecFourWay ): # Caught the four-way intersections in the y-loop above 
+            if( yes_intersecFourWay and not yes_verticalLine ): # Caught the four-way intersections in the y-loop above (if line isn't vertical)
                 continue
             
             intersection = (x, j)
 
             yes_needsOriginFix = yes_intersecGridRight # Don't count pixel to the right of the circle
             for row in 0,1: # Adding the pixels above (j) and below (j-1) of the x intersection in one loop
-                px_origX = int(x) - int(yes_needsOriginFix)
+                px_origX = int(np.rint(x)) * int(yes_intersecWithCol) + int(x) * int(1-yes_intersecWithCol) - int(yes_needsOriginFix)
                 px_origY = j - row
                 if( px_origY < 0 or px_origY >= N_px ) : continue # Don't add "pixels" outside the grid
                 px_orig = ( px_origX, px_origY )
@@ -484,7 +488,7 @@ class AziLineOnGrid(PixelGrid, AziLine):
 
             area_L, area_R = AziLineOnGrid.get_areaSegment( px_orig, val[0], val[1] )
             
-            if (area_L > 1. or area_R > 1.):
+            if (area_L + area_R > 1.):
                 raise AssertionError( "ERROR in calculating fractional area | Area is larger than 1 for pixel " + str(key) )
 
             px_enclosedArea[key] = area_L, area_R 
@@ -606,11 +610,15 @@ def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000 +1 ): # ( int, float,
     # Line 
     y_line = [ ALoG.get_line( i, chi, x0, y0 ) for i in x_plt ]
     ax.plot(x_plt, y_line, color="tab:blue")
+    if( math.isclose( chi, math.pi/2. ) or math.isclose( chi, 3.*math.pi/2. ) ):
+        ax.vlines( x=x0, ymin=0, ymax=N_px, color="tab:blue" )
 
     # Intersections between grid and circle 
     for i in range(len(px_intersections)):
         ax.plot( px_intersections[i][0], px_intersections[i][1], "x", color="tab:orange" )
 
+    ax.set_xlim([0,10])
+    ax.set_ylim([0,10])
     plt.show()
     return 
 
@@ -619,7 +627,7 @@ N_px = 10
 R = 2.
 x0 = 5
 y0 = 5
-chi = math.pi/2. # BUG in check_ALoGIntersections for chi = pi and pi/2
+chi = 3.*math.pi/2.
 
 # check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
 # check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
