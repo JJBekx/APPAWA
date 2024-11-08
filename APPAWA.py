@@ -12,6 +12,9 @@ import matplotlib.pyplot as plt
 import math
 import time
 
+# TODO: Request - color interior of circle in plotting - maybe same for AziLine left (blue) and right (red)
+# BUG: Analytical area always does a full circle - wrong if partially outside of grid
+
 # Primordial classes that need no building blocks, only input parameters ==========
 class PixelGrid():
     # -----------------------------------------------------------------------------
@@ -22,7 +25,7 @@ class PixelGrid():
     def __init__( self, N_px, px_len=75., **kwargs ): # ( self, int, float )
         super().__init__(**kwargs)
         self.N_px   = N_px   # Defines a square (N_px x N_px)-grid
-        self.px_len = px_len # Defines the pixel width (=height) in μm - Default=Eiger2 # TODO: verify with DanMAX
+        self.px_len = px_len # Defines the pixel width (=height) in μm - Default=Eiger2 # NOTE: verify with DanMAX
 
         grid_min = 0
         grid_max = N_px # Normalized to (1 x 1) a.u.² pixels. 
@@ -31,16 +34,16 @@ class PixelGrid():
 
     @classmethod
     def get_pixelIndex( cls, px_orig, N_px ): # ( cls, (int, int), int )
-        # ---------------------------------------------------------------
-        # Provides the counting index of a given pixel defined by its    |
-        # origin (lower-left corner) location, given as (x,y).           |
-        # Example for a 3x3 pixel grid:                                  |
-        #                             ___________                        |
-        #     e.g.: "0" = (0,0)      |_6_|_7_|_8_|                       |
-        #           "5" = (2,1)      |_3_|_4_|_5_|                       |
-        #           "7" = (1,2)      |_0_|_1_|_2_|                       |
-        #                                                                |
-        # ---------------------------------------------------------------
+        # ------------------------------------------------------------
+        # Provides the counting index of a given pixel defined by its |
+        # origin (lower-left corner) location, given as (x,y).        |
+        # Example for a 3x3 pixel grid:                               |
+        #                             ___________                     |
+        #     e.g.: "0" = (0,0)      |_6_|_7_|_8_|                    |
+        #           "5" = (2,1)      |_3_|_4_|_5_|                    |
+        #           "7" = (1,2)      |_0_|_1_|_2_|                    |
+        #                                                             |
+        # ------------------------------------------------------------
         x_px, y_px = px_orig
         return N_px * y_px + x_px
 
@@ -50,6 +53,12 @@ class PixelGrid():
         # Provides the inverse of get_pixelIndex. |
         # ----------------------------------------
         return ( int( px_index%N_px ), int( px_index/N_px ) )
+
+    @classmethod
+    def is_in_grid( cls, px, N_px ): # (cls, (int, int), int)
+        px_x, px_y = px
+        val = ( px_x >= 0 and px_x <= N_px ) and ( px_y >= 0 and px_y <= N_px )
+        return val
 
 class Circle():
     # -----------------------------------------------------------------------------------
@@ -118,7 +127,6 @@ class AziLine():
 #       Better to create instances in the init of the child class instead? 
 
 class CircleOnGrid(PixelGrid, Circle):
-    # BUG and TODO: never considered the case when the circle is (partially) outside the pixel grid - or grazes the grid edge.
     # -------------------------------------------------------------------------------------
     # This class considers one instance of the class PixelGrid and one of the class Circle | TODO: doesn't really make any instances, only initializes attributes
     # and calculates where the intersections are between the two and to which pixel these  |
@@ -139,7 +147,10 @@ class CircleOnGrid(PixelGrid, Circle):
         y_rand = np.random.uniform(px_y, px_y + 1, N_MC)
         sum_enclosedByCurve = 0
         for i in range(len(x_rand)):
+            # y_circ = CircleOnGrid.get_circ(x_rand[i], R, x0, y0)
             if( y_rand[i] >= y0 ):
+                # yes_isNan = ( np.isnan( y_circ[0] ) )
+                # y_U = N_px * int( yes_isNan ) + y_circ[0] * int(1 - yes_isNan)
                 enclosed_ByCurve = ( y_rand[i] <= CircleOnGrid.get_circ(x_rand[i], R, x0, y0)[0] ) # [0] = circle y values >= y0
             else:
                 enclosed_ByCurve = ( y_rand[i] > CircleOnGrid.get_circ(x_rand[i], R, x0, y0)[1] )  # [1] = circle y values < y0
@@ -227,12 +238,13 @@ class CircleOnGrid(PixelGrid, Circle):
         super().__init__( N_px=N_px, R=R, x0=x0, y0=y0 ) # Initialize parent attributes (does not make instances)
 
         # Identify ROI with circle in it ---
-        ROI_ixMin  = int( (x0 - R) )
-        ROI_ixMax  = int( (x0 + R) + 0.99 ) # TODO: Could be prone to bugs, e.g. if x0+R = int+0.0001 - Is a tight ROI square absolutely necessary? 
+        eps        = 1. - 1.e-16
+        ROI_ixMin  = max( int( (x0 - R) ), 0 )
+        ROI_ixMax  = min( int( (x0 + R) + eps ), N_px) # NOTE: Could be prone to bugs. Is a tight ROI square absolutely necessary? 
         ROI_x      = range( ROI_ixMin, ROI_ixMax+1 ) 
         self.ROI_x = ROI_x
-        ROI_jyMin  = int( (y0 - R) )
-        ROI_jyMax  = int( (y0 + R) + 0.99 ) 
+        ROI_jyMin  = max( int( (y0 - R) ), 0 )
+        ROI_jyMax  = min( int( (y0 + R) + eps ), N_px)
         ROI_y      = range( ROI_jyMin, ROI_jyMax+1 )
         self.ROI_y = ROI_y
 
@@ -246,6 +258,9 @@ class CircleOnGrid(PixelGrid, Circle):
 
             for y in y_U, y_D: 
                 if( np.isnan(y) ): # Skip NaNs
+                    continue
+
+                if( y < 0 or y > N_px ): # Skip intersections outside of pixel grid
                     continue
 
                 intersection = (i, y) 
@@ -264,6 +279,7 @@ class CircleOnGrid(PixelGrid, Circle):
                         yes_needsOriginFix = yes_intersecCircTop # Don't count pixel above the circle top
                         px_origX = i - col
                         px_origY = int(y) - int(yes_needsOriginFix)
+                    if( px_origX < 0 or px_origX >= N_px ): continue # Don't add "pixels" outside the grid
                     px_orig = ( px_origX, px_origY )
                     key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
                     px_intersections.setdefault(key, []).append( intersection )
@@ -275,7 +291,10 @@ class CircleOnGrid(PixelGrid, Circle):
                 continue                    # Ignore this, it was caught by y_U and y_D
 
             for x in x_L, x_R:
-                if( np.isnan(x) ): # Skip NaNs.
+                if( np.isnan(x) ): # Skip NaNs
+                    continue
+
+                if( x < 0 or x > N_px ): # Skip intersections outside of pixel grid
                     continue
 
                 yes_intersecWithCol   = ( math.isclose( x, int(x) ) )    # The intersection is at a pixel col - possible four-way intersection
@@ -292,6 +311,7 @@ class CircleOnGrid(PixelGrid, Circle):
                 for row in 0,1: # Adding the pixels above (j) and below (j-1) of the x intersection in one loop
                     px_origX = int(x) - int(yes_needsOriginFix)
                     px_origY = j - row
+                    if( px_origY < 0 or px_origY >= N_px ) : continue # Don't add "pixels" outside the grid
                     px_orig = ( px_origX, px_origY )
                     key = PixelGrid.get_pixelIndex( px_orig=px_orig, N_px=N_px )
                     px_intersections.setdefault(key, []).append( intersection )
@@ -302,21 +322,22 @@ class CircleOnGrid(PixelGrid, Circle):
         px_enclosedArea = {} # Frac. pixel area enclosed in circle
 
         # Pixels in full interior of circle 
-        px_indicesSorted = sorted( px_intersections.keys() ) # Ensures order (i, j), (i+1, j), ..., (i, j+1), (i+1, j+1), ... 
-        px_withIntersections = [ PixelGrid.get_pixelOrigin( i, N_px=N_px ) for i in px_indicesSorted ]
-        for i in range(1,len(px_withIntersections)):
-            curr_tup = px_withIntersections[i]
-            prev_tup = px_withIntersections[i-1]
-            if( curr_tup[1]==prev_tup[1] ): # These are on the same row            
-                if( curr_tup[0] == prev_tup[0] + 1 ): # These are adjacent pixels with intersections
-                    continue
+        keys = list( px_intersections.keys() )
+        for i in range( ROI_ixMax + 1 ):
+            for j in range( ROI_jyMax + 1 ):
+                px_x     = int(x0) - (int(ROI_ixMax/2) + 1) + i
+                px_y     = int(y0) - (int(ROI_jyMax/2) + 1) + j
+                px       = (px_x, px_y)
+                px_index = PixelGrid.get_pixelIndex( px, N_px )
+                yes_alreadyCovered = px_index in keys
+                if( yes_alreadyCovered ): continue
+                yes_inGrid = PixelGrid.is_in_grid( px, N_px )
+                dist = ( (x0-px_x)**2. + (y0-px_y)**2. )**0.5
+                yes_within = dist <= R
+                if( yes_inGrid and yes_within ):
+                    px_enclosedArea[px_index] = 1. # Area is 1 a.u.²
                 else:
-                    for j in range(1, curr_tup[0] - prev_tup[0] ): # All of these in between are within the circle
-                        px_within = ( prev_tup[0] + j, curr_tup[1] )
-                        key = PixelGrid.get_pixelIndex( px_within, N_px )
-                        px_enclosedArea[key] = 1. # Area is 1 a.u.²
-            else:
-                continue
+                    continue
 
         # Fractional area weights 
         for key, val in px_intersections.items():
@@ -495,7 +516,7 @@ class AziLineOnGrid(PixelGrid, AziLine):
         self.px_enclosedArea = px_enclosedArea
 
 # Functions designed for development checks ==========
-def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ): # ( int, float, float, float, int )
+def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000+1 ): # ( int, float, float, float, int )
     
     # Create an instance ---
     CoG = CircleOnGrid(N_px=N_px, R=R, x0=x0, y0=y0)
@@ -521,9 +542,13 @@ def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000 +1 ): # ( int, float, fl
     [ ax.hlines( y=CoG.ROI_y[i], xmin=CoG.ROI_x[0], xmax=CoG.ROI_x[-1], color="k" ) for i in range(len(CoG.ROI_y)) ]
 
     # Circle 
-    y_circle = [ CoG.get_circ( i, R, x0, y0 ) for i in x_plt ]
-    y_upper = [ i[0] for i in y_circle ]
-    y_lower = [ i[1] for i in y_circle ]
+    y_upper = []; y_lower = []
+    for i in x_plt:
+        y_U, y_D = CoG.get_circ( i, R, x0, y0 ) 
+        if( y_U < 0 or y_U > N_px ): y_U = np.nan
+        if( y_D < 0 or y_D > N_px ): y_D = np.nan
+        y_upper.append(y_U)
+        y_lower.append(y_D)
     ax.plot(x_plt, y_upper, color="tab:blue")
     ax.plot(x_plt, y_lower, color="tab:blue")
 
@@ -582,7 +607,7 @@ def check_CoGAreas( N_px, R, x0, y0, yes_MC=False, px_orig=None, N_MC=10000, yes
             print( "  - Monte Carlo approxim: ", total_MC, " and took ", t_MC, " sec to calculate using ", N_MC, "points" )
     return
 
-def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000 +1 ): # ( int, float, float, float, int )
+def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000+1 ): # ( int, float, float, float, int )
     
     # Create an instance ---
     ALoG = AziLineOnGrid(N_px=N_px, chi=chi, x0=x0, y0=y0)
@@ -622,19 +647,27 @@ def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000 +1 ): # ( int, float,
     plt.show()
     return 
 
+def check_ALoGAreas( N_px, chi, x0, y0 ): # ( int, float, float, float )
+    ALoG = AziLineOnGrid( N_px, chi, x0, y0 )
+    for k,v in ALoG.px_enclosedArea.items():
+        px_origin = PixelGrid.get_pixelOrigin( k, N_px )
+        print( "Pixel ", k, " at loc", px_origin, " is cut into L & R areas", v, "; Total=", sum(v) )
+    return
+
 # Testing Space ============
+
 N_px = 10
+x0 = 1.1
+y0 = 1.1
+
+# Circle on Grid ---
 R = 2.
-x0 = 5
-y0 = 5
-chi = 3.*math.pi/2.
+check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
+check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
 
-# check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
-# check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
+# AziLine on Grid ---
+# chi = 3.*math.pi/2.
+# check_ALoGIntersections( N_px=N_px, chi=chi, x0=x0, y0=y0 )
+# check_ALoGAreas( N_px=N_px, chi=chi, x0=x0, y0=y0 )
 
-check_ALoGIntersections( N_px=N_px, chi=chi, x0=x0, y0=y0 )
-ALoG = AziLineOnGrid( N_px, chi, x0, y0 )
-for k,v in ALoG.px_enclosedArea.items():
-    print( k, v, sum(v) )
-
-# ==============
+# ===========================
