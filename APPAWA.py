@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import math
 import time
 
-# TODO: Request - color interior of circle in plotting - maybe same for AziLine left (blue) and right (red)
+# TODO: Fill color AziLine is not consistently left (blue) and right (red)
 # BUG: Analytical area always does a full circle - wrong if partially outside of grid
 
 # Primordial classes that need no building blocks, only input parameters ==========
@@ -238,9 +238,9 @@ class CircleOnGrid(PixelGrid, Circle):
         super().__init__( N_px=N_px, R=R, x0=x0, y0=y0 ) # Initialize parent attributes (does not make instances)
 
         # Identify ROI with circle in it ---
-        eps        = 1. - 1.e-16
+        eps        = 1. - 5.e-16
         ROI_ixMin  = max( int( (x0 - R) ), 0 )
-        ROI_ixMax  = min( int( (x0 + R) + eps ), N_px) # NOTE: Could be prone to bugs. Is a tight ROI square absolutely necessary? 
+        ROI_ixMax  = min( int( (x0 + R) + eps ), N_px) # NOTE: Could be prone to bugs., but a tight ROI square is absolutely necessary
         ROI_x      = range( ROI_ixMin, ROI_ixMax+1 ) 
         self.ROI_x = ROI_x
         ROI_jyMin  = max( int( (y0 - R) ), 0 )
@@ -333,11 +333,11 @@ class CircleOnGrid(PixelGrid, Circle):
                 if( yes_alreadyCovered ): continue
                 yes_inGrid = PixelGrid.is_in_grid( px, N_px )
                 dist = ( (x0-px_x)**2. + (y0-px_y)**2. )**0.5
-                yes_within = dist <= R
+                yes_within = dist < R
                 if( yes_inGrid and yes_within ):
                     px_enclosedArea[px_index] = 1. # Area is 1 a.u.²
                 else:
-                    continue
+                    continue        
 
         # Fractional area weights 
         for key, val in px_intersections.items():
@@ -542,15 +542,22 @@ def check_CoGIntersections( N_px, R, x0, y0, N_plt=1000+1 ): # ( int, float, flo
     [ ax.hlines( y=CoG.ROI_y[i], xmin=CoG.ROI_x[0], xmax=CoG.ROI_x[-1], color="k" ) for i in range(len(CoG.ROI_y)) ]
 
     # Circle 
+    ax.plot(x0, y0, "bo")
     y_upper = []; y_lower = []
+    y_forFillUp = []; y_forFillDown = []
     for i in x_plt:
         y_U, y_D = CoG.get_circ( i, R, x0, y0 ) 
+        yes_isNanU = np.isnan( y_U )
+        yes_isNanD = np.isnan( y_D )
+        y_forFillUp.append( min(N_px, y_U) * int( 1-yes_isNanU ) + y_U * int(yes_isNanU) )
+        y_forFillDown.append( max(0, y_D) * int( 1-yes_isNanD ) + y_D * int(yes_isNanD) )
         if( y_U < 0 or y_U > N_px ): y_U = np.nan
         if( y_D < 0 or y_D > N_px ): y_D = np.nan
         y_upper.append(y_U)
         y_lower.append(y_D)
     ax.plot(x_plt, y_upper, color="tab:blue")
     ax.plot(x_plt, y_lower, color="tab:blue")
+    ax.fill_between( x=x_plt, y1=y_forFillDown, y2=y_forFillUp, color="red", alpha=0.5 )
 
     # Intersections between grid and circle 
     for i in range(len(px_intersections)):
@@ -638,6 +645,19 @@ def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000+1 ): # ( int, float, 
     if( math.isclose( chi, math.pi/2. ) or math.isclose( chi, 3.*math.pi/2. ) ):
         ax.vlines( x=x0, ymin=0, ymax=N_px, color="tab:blue" )
 
+    yes_verticalLine   = ( math.isclose(chi,math.pi/2.) or math.isclose(chi,3.*math.pi/2.) )
+    if( yes_verticalLine ):
+        ax.fill_betweenx(y=range(0, N_px+1), x1=0, x2=x0, color="blue", alpha=0.5 )
+        ax.fill_betweenx(y=range(0, N_px+1), x1=x0, x2=N_px, color="red", alpha=0.5 )
+    else:
+        y_L = []; y_R = []
+        for i in x_plt:
+            y_line = ALoG.get_line( i, chi, x0, y0 )
+            y_L.append(max(0., y_line))
+            y_R.append(min(N_px, y_line))
+        ax.fill_between(x=x_plt, y1=y_L, y2=np.ones(len(x_plt))*N_px, color="blue", alpha=0.5 )
+        ax.fill_between(x=x_plt, y1=np.zeros(len(x_plt)), y2=y_R, color="red", alpha=0.5 )
+
     # Intersections between grid and circle 
     for i in range(len(px_intersections)):
         ax.plot( px_intersections[i][0], px_intersections[i][1], "x", color="tab:orange" )
@@ -657,17 +677,17 @@ def check_ALoGAreas( N_px, chi, x0, y0 ): # ( int, float, float, float )
 # Testing Space ============
 
 N_px = 10
-x0 = 1.1
-y0 = 1.1
+x0 = 5.
+y0 = 5.
 
 # Circle on Grid ---
 R = 2.
-check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
-check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
+# check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
+# check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
 
 # AziLine on Grid ---
-# chi = 3.*math.pi/2.
-# check_ALoGIntersections( N_px=N_px, chi=chi, x0=x0, y0=y0 )
-# check_ALoGAreas( N_px=N_px, chi=chi, x0=x0, y0=y0 )
+chi = math.pi * (5/6)
+check_ALoGIntersections( N_px=N_px, chi=chi, x0=x0, y0=y0 )
+check_ALoGAreas( N_px=N_px, chi=chi, x0=x0, y0=y0 )
 
 # ===========================
