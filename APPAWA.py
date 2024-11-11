@@ -6,13 +6,12 @@
 # NOTE: All routines assume a pixel area of (1 x 1) a.u.² |
 #       Therefore, APPAWA calculates a fractional weight, |
 #       not an absolute partial area.                     |
-# ========================================================
+#=========================================================
 import numpy as np
 import matplotlib.pyplot as plt
 import math
 import time
 
-# TODO: Fill color AziLine is not consistently left (blue) and right (red)
 # BUG: Analytical area always does a full circle - wrong if partially outside of grid
 
 # Primordial classes that need no building blocks, only input parameters ==========
@@ -21,7 +20,7 @@ class PixelGrid():
     # This class defines the square pixel grid and contains all of its properties. |
     # NOTE: Though px_len [μm] is provided, APPAWA's end results are fractional    |
     #       weights (equivalent essentially to px_len=1).                          |
-    #------------------------------------------------------------------------------
+    # -----------------------------------------------------------------------------
     def __init__( self, N_px, px_len=75., **kwargs ): # ( self, int, float )
         super().__init__(**kwargs)
         self.N_px   = N_px   # Defines a square (N_px x N_px)-grid
@@ -56,6 +55,9 @@ class PixelGrid():
 
     @classmethod
     def is_in_grid( cls, px, N_px ): # (cls, (int, int), int)
+        # ------------------------------------------------------
+        # Returns True if px_x ∈ [0, N_px] and px_y ∈ [0, N_px] |
+        # ------------------------------------------------------
         px_x, px_y = px
         val = ( px_x >= 0 and px_x <= N_px ) and ( px_y >= 0 and px_y <= N_px )
         return val
@@ -139,7 +141,7 @@ class CircleOnGrid(PixelGrid, Circle):
         # Numerical Monte Carlo integration of the area enclosed by               |
         # a circle at origin (x0, y0) and radius R and                            |
         # a pixel at origin px_orig denoting the lower-left corner of the pixel.  |
-        # All lengths are normalized to a pixel length value.                     |
+        # All lengths are normalized to a pixel length value of 1.                |
         # Therefore, the result is the fraction of the pixel area being enclosed. |
         # ------------------------------------------------------------------------
         px_x, px_y = px_orig
@@ -147,13 +149,11 @@ class CircleOnGrid(PixelGrid, Circle):
         y_rand = np.random.uniform(px_y, px_y + 1, N_MC)
         sum_enclosedByCurve = 0
         for i in range(len(x_rand)):
-            # y_circ = CircleOnGrid.get_circ(x_rand[i], R, x0, y0)
+            y_circ = CircleOnGrid.get_circ(x_rand[i], R, x0, y0)
             if( y_rand[i] >= y0 ):
-                # yes_isNan = ( np.isnan( y_circ[0] ) )
-                # y_U = N_px * int( yes_isNan ) + y_circ[0] * int(1 - yes_isNan)
-                enclosed_ByCurve = ( y_rand[i] <= CircleOnGrid.get_circ(x_rand[i], R, x0, y0)[0] ) # [0] = circle y values >= y0
+                enclosed_ByCurve = ( y_rand[i] <= y_circ[0] ) # [0] = circle y values >= y0
             else:
-                enclosed_ByCurve = ( y_rand[i] > CircleOnGrid.get_circ(x_rand[i], R, x0, y0)[1] )  # [1] = circle y values < y0
+                enclosed_ByCurve = ( y_rand[i] > y_circ[1] )  # [1] = circle y values < y0
             sum_enclosedByCurve += enclosed_ByCurve
         Area_px = 1.**2. # Assuming normalized pixel length throughout
         Area_MC = sum_enclosedByCurve * Area_px / N_MC
@@ -240,13 +240,15 @@ class CircleOnGrid(PixelGrid, Circle):
         # Identify ROI with circle in it ---
         eps        = 1. - 5.e-16
         ROI_ixMin  = max( int( (x0 - R) ), 0 )
-        ROI_ixMax  = min( int( (x0 + R) + eps ), N_px) # NOTE: Could be prone to bugs., but a tight ROI square is absolutely necessary
+        ROI_ixMax  = min( int( (x0 + R) + eps ), N_px) # NOTE: Could be prone to bugs, but a tight ROI square is absolutely necessary
         ROI_x      = range( ROI_ixMin, ROI_ixMax+1 ) 
         self.ROI_x = ROI_x
         ROI_jyMin  = max( int( (y0 - R) ), 0 )
         ROI_jyMax  = min( int( (y0 + R) + eps ), N_px)
         ROI_y      = range( ROI_jyMin, ROI_jyMax+1 )
         self.ROI_y = ROI_y
+
+        rel_tol = N_px * 1e-16
 
         # Collecting intersections and the pixels that contain them ---
         px_intersections = {} # Dictionary = { "pixel index with an intersection": [ intersections as tuples ] }
@@ -260,8 +262,10 @@ class CircleOnGrid(PixelGrid, Circle):
                 if( np.isnan(y) ): # Skip NaNs
                     continue
 
-                if( y < 0 or y > N_px ): # Skip intersections outside of pixel grid
+                if( y + rel_tol < 0 or y - rel_tol > N_px ): # Skip intersections outside of pixel grid
                     continue
+                if( y < 0 ): y=0. # Catching minute differences
+                if( y > N_px ): y=N_px
 
                 intersection = (i, y) 
 
@@ -294,8 +298,10 @@ class CircleOnGrid(PixelGrid, Circle):
                 if( np.isnan(x) ): # Skip NaNs
                     continue
 
-                if( x < 0 or x > N_px ): # Skip intersections outside of pixel grid
+                if( x + rel_tol < 0 or x - rel_tol > N_px ): # Skip intersections outside of pixel grid
                     continue
+                if( x < 0 ): x=0. # Catching minute differences
+                if( x > N_px ): x=N_px
 
                 yes_intersecWithCol   = ( math.isclose( x, int(x) ) )    # The intersection is at a pixel col - possible four-way intersection
                 yes_intersecCircLeft  = ( math.isclose( x, ROI_x[0] ) )  # The intersection grazes the circle left-most tip
@@ -427,9 +433,10 @@ class AziLineOnGrid(PixelGrid, AziLine):
 
         yes_ascendingLine  = (chi >= 0. and chi < math.pi/2.) or (chi >= math.pi and chi < 3.*math.pi/2.) # no chi < 0
         yes_descendingLine = not yes_ascendingLine # BUG this is chi, not AziLine.chi. Error if someone fills in 183 deg
-        # yes_horizontalLine = math.isclose( np.abs(chi%math.pi), 0. )
         yes_horizontalLine = ( math.isclose(chi,0.) or math.isclose(chi,math.pi) )
         yes_verticalLine   = ( math.isclose(chi,math.pi/2.) or math.isclose(chi,3.*math.pi/2.) )
+
+        rel_tol = N_px * 1e-16
 
         # Collecting intersections and the pixels that contain them ---
         px_intersections = {} # Dictionary = { "pixel index with an intersection": [ intersections as tuples ] }
@@ -440,8 +447,10 @@ class AziLineOnGrid(PixelGrid, AziLine):
             if( np.isnan(y) ): # Skip NaNs
                 continue
 
-            if( y < 0 or y > N_px ): # Skip intersections outside of pixel grid
+            if( y + rel_tol < 0 or y - rel_tol > N_px ): # Skip intersections outside of pixel grid
                 continue
+            if( y < 0 ): y=0. # Catching minute differences
+            if( y > N_px ): y=N_px
 
             intersection = (i, y) 
 
@@ -464,15 +473,17 @@ class AziLineOnGrid(PixelGrid, AziLine):
                 px_intersections.setdefault(key, []).append( intersection )
             
         for j in grid_sq: # Gathering all intersections with rows
-            if( math.isclose(abs(chi), math.pi/4.) ): continue # catch bordercase to prevent third intersection
+            if( math.isclose(abs(chi), math.pi/4.) or math.isclose(abs(chi), math.pi*3./4.) ): continue # catch bordercase to prevent third intersection
             x = AziLine.get_line( x=j, chi=math.pi/2.-chi, x0=y0, y0=x0 ) # Can use same formula if you switch x <-> y.
             # Switch x <-> equivalent to chi -> pi/2 - chi, x0 -> y0, y0 -> x0
 
             if( np.isnan(x) ): # Skip NaNs.
                 continue
 
-            if( x < 0 or x > N_px ): # Skip intersections outside of pixel grid
+            if( x + rel_tol < 0 or x - rel_tol > N_px ): # Skip intersections outside of pixel grid
                 continue
+            if( x < 0 ): x=0. # Catching minute differences
+            if( x > N_px ): x=N_px
 
             yes_intersecWithCol   = ( math.isclose( x, int(np.rint(x)) ) ) # The intersection is at a pixel col - possible four-way intersection
             yes_intersecGridLeft  = ( math.isclose( x, grid_sq[0] ) )      # The intersection hits the grid on the left
@@ -497,8 +508,8 @@ class AziLineOnGrid(PixelGrid, AziLine):
 
         # Collecting areas ---
         px_enclosedArea = {} # Frac. area left and right of the AziLine
-        # All pixels not in AziLineOnGrid.px_enclosedArea have an area of 1
-        # Different than in CircleOnGrid.px_enclosedArea
+        # NOTE: All pixels not in AziLineOnGrid.px_enclosedArea have an area of 1
+        #       This is not saved and is different than in CircleOnGrid.px_enclosedArea
 
         # Fractional area weights 
         for key, val in px_intersections.items():
@@ -639,31 +650,29 @@ def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000+1 ): # ( int, float, 
     ax.plot(x0, y0, "bo")
     ax.hlines( y=y0, xmin=0, xmax=N_px, color="k", ls="-" )
 
-    # Line 
+    # Line & fill
     y_line = [ ALoG.get_line( i, chi, x0, y0 ) for i in x_plt ]
     ax.plot(x_plt, y_line, color="tab:blue")
-    if( math.isclose( chi, math.pi/2. ) or math.isclose( chi, 3.*math.pi/2. ) ):
-        ax.vlines( x=x0, ymin=0, ymax=N_px, color="tab:blue" )
-
-    yes_verticalLine   = ( math.isclose(chi,math.pi/2.) or math.isclose(chi,3.*math.pi/2.) )
+    yes_verticalLine  = ( math.isclose(chi,math.pi/2.) or math.isclose(chi,3.*math.pi/2.) )
     if( yes_verticalLine ):
+        ax.vlines( x=x0, ymin=0, ymax=N_px, color="tab:blue" )
         ax.fill_betweenx(y=range(0, N_px+1), x1=0, x2=x0, color="blue", alpha=0.5 )
         ax.fill_betweenx(y=range(0, N_px+1), x1=x0, x2=N_px, color="red", alpha=0.5 )
     else:
         y_L = []; y_R = []
-        for i in x_plt:
-            y_line = ALoG.get_line( i, chi, x0, y0 )
-            y_L.append(max(0., y_line))
-            y_R.append(min(N_px, y_line))
-        ax.fill_between(x=x_plt, y1=y_L, y2=np.ones(len(x_plt))*N_px, color="blue", alpha=0.5 )
-        ax.fill_between(x=x_plt, y1=np.zeros(len(x_plt)), y2=y_R, color="red", alpha=0.5 )
+        yes_descendingLine = ( (chi > math.pi/2.) and (chi < math.pi) ) or ( (chi > 3.*math.pi/2.) and (chi < 2.*math.pi) )
+        for i in range(len(x_plt)):
+            y_L.append(max(0., y_line[i]))
+            y_R.append(min(N_px, y_line[i]))
+        ax.fill_between(x=x_plt, y1=y_L, y2=np.ones(len(x_plt))*N_px, color="blue" * int(1-yes_descendingLine) + "red" * int(yes_descendingLine), alpha=0.5 )
+        ax.fill_between(x=x_plt, y1=np.zeros(len(x_plt)), y2=y_R, color="red" * int(1-yes_descendingLine) + "blue" * int(yes_descendingLine), alpha=0.5 )
 
     # Intersections between grid and circle 
     for i in range(len(px_intersections)):
         ax.plot( px_intersections[i][0], px_intersections[i][1], "x", color="tab:orange" )
 
-    ax.set_xlim([0,10])
-    ax.set_ylim([0,10])
+    ax.set_xlim([0,N_px])
+    ax.set_ylim([0,N_px])
     plt.show()
     return 
 
@@ -681,12 +690,12 @@ x0 = 5.
 y0 = 5.
 
 # Circle on Grid ---
-R = 2.
+# R = 2.
 # check_CoGIntersections( N_px=N_px, R=R, x0=x0, y0=y0 )
 # check_CoGAreas(N_px=N_px, R=R, x0=x0, y0=y0, yes_MC=True, N_MC=1000000, yes_verbose=True)
 
 # AziLine on Grid ---
-chi = math.pi * (5/6)
+chi = math.pi * (11/6)
 check_ALoGIntersections( N_px=N_px, chi=chi, x0=x0, y0=y0 )
 check_ALoGAreas( N_px=N_px, chi=chi, x0=x0, y0=y0 )
 
