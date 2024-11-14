@@ -620,7 +620,7 @@ def check_CoGAreas( N_px, R, x0, y0, yes_MC=False, px_orig=None, N_MC=10000, yes
     return
 
 def check_ALoGIntersections( N_px, chi, x0, y0, N_plt=1000+1 ): # ( int, float, float, float, int )
-    
+  
     # Create an instance ---
     ALoG = AziLineOnGrid(N_px=N_px, chi=chi, x0=x0, y0=y0)
     
