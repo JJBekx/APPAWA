@@ -18,13 +18,10 @@ import time
 class PixelGrid():
     # -----------------------------------------------------------------------------
     # This class defines the square pixel grid and contains all of its properties. |
-    # NOTE: Though px_len [μm] is provided, APPAWA's end results are fractional    |
-    #       weights (equivalent essentially to px_len=1).                          |
     # -----------------------------------------------------------------------------
-    def __init__( self, N_px, px_len=75., **kwargs ): # ( self, int, float )
+    def __init__( self, N_px, **kwargs ): # ( self, int, float )
         super().__init__(**kwargs)
         self.N_px   = N_px   # Defines a square (N_px x N_px)-grid
-        self.px_len = px_len # Defines the pixel width (=height) in μm - Default=Eiger2 # NOTE: verify with DanMAX
 
         grid_min = 0
         grid_max = N_px # Normalized to (1 x 1) a.u.² pixels. 
@@ -100,15 +97,8 @@ class AziLine():
     #------------------------------------------------------------------------------------
     def __init__( self, chi, x0, y0, **kwargs ): # ( self, float, float, float )
         super().__init__(**kwargs)
-
-        if( np.abs( chi ) > 2.*math.pi ):
-            chi = chi * ( math.pi / 180. )
-            print( "WARNING in creation of object instance AziLine \n" +
-                   "Angle chi is likely in deg; expecting rad. \n" +
-                   "Conversion made internally, but give input as rad to suppress this warning." )
-            # TODO: might spam warnings for many instances created -> use class variable? -> How?
         
-        self.chi = chi # Angle between positive x-direction and the line (+ = counter-clockwise)
+        self.chi = chi # Angle ∈ [0, 2pi] between positive x-direction and the line (+ = counter-clockwise)
         self.x0  = x0  # Point around which the line rotates with the angle chi - x-coordinate
         self.y0  = y0  # Point around which the line rotates with the angle chi - y-coordinate
 
@@ -124,16 +114,12 @@ class AziLine():
             return y0 + ( x - x0 ) * math.tan( chi ) # See "Hesse normal form" for explanation
 
 # Classes that build on primordial classes ==========
-# TODO: init with multiple inheritance only calls init on the first parent
-#       This is fixed by adding super().__init__(**kwargs) in the init of all parent classes
-#       Better to create instances in the init of the child class instead? 
-
 class CircleOnGrid(PixelGrid, Circle):
     # -------------------------------------------------------------------------------------
-    # This class considers one instance of the class PixelGrid and one of the class Circle | TODO: doesn't really make any instances, only initializes attributes
-    # and calculates where the intersections are between the two and to which pixel these  |
-    # belong to. For each pixel the fractional area weight enclosed in the circle is also  |
-    # calculated. The intersections and area weights are stored in separate dictionaries.  |
+    # This class is a child of the classes PixelGrid and Circle and calculates where the   | 
+    # intersections are between the two and to which pixel these belong to.                |
+    # For each pixel the fractional area weight enclosed in the circle is also calculated. |
+    # The intersections and area weights are stored in separate dictionaries.              |
     #--------------------------------------------------------------------------------------
     @classmethod
     def get_enclosedAreaMC( cls, px_orig, R, x0, y0, N_MC=10000 ): # ( cls, (int, int), float, float, float, int )
@@ -388,17 +374,25 @@ class CircleOnGrid(PixelGrid, Circle):
         self.px_enclosedArea = px_enclosedArea
 
 class AziLineOnGrid(PixelGrid, AziLine): 
+    # -------------------------------------------------------------------------------------
+    # This class is a child of the classes PixelGrid and AziLine and calculates where the  | 
+    # intersections are between the two and to which pixel these belong to.                |
+    # For each pixel the fractional area separated by the AziLine is also calculated.      |
+    # The intersections and area weights are stored in separate dictionaries.              |
+    #--------------------------------------------------------------------------------------
 
     @classmethod 
     def get_areaSegment( cls, px_orig, intersec1, intersec2 ): # ( cls, (int, int), (float, float), (float, float) )
         # ----------------------------------------------------------------
         # Calculates the area to the left and to the right of the AziLine |
         # in the considered pixel. For vertical cut, Up = L               |
-        #                                _____ /_                         |
-        #                               |     /  |                        |
-        #                               | L  /   |                        |
-        #                               |   /  R |                        |
-        #                                --/-----                         |
+        # For chi in [0,pi], "left" is in the counter-clockwise direction |
+        # All other chi's are captured by the previous case.              |
+        #        ________            _____ /_            _\ _____         |
+        #       |   L    |          |     /  |          |  \      |       |
+        #       |--------|          | L  /   |          |   \  R  |       |
+        #       |   R    |          |   /  R |          | L  \    |       |
+        #        --------            --/-----            -----\---        |
         # ----------------------------------------------------------------
         px_x, px_y = px_orig
         insec1, insec2 = sorted( [ intersec1, intersec2 ], key=lambda elem:elem[0] ) # sort along x-coordinate
@@ -432,7 +426,7 @@ class AziLineOnGrid(PixelGrid, AziLine):
         super().__init__( N_px=N_px, chi=chi, x0=x0, y0=y0 ) # Initialize parent attributes (does not make instances)
 
         yes_ascendingLine  = (chi >= 0. and chi < math.pi/2.) or (chi >= math.pi and chi < 3.*math.pi/2.) # no chi < 0
-        yes_descendingLine = not yes_ascendingLine # BUG this is chi, not AziLine.chi. Error if someone fills in 183 deg
+        yes_descendingLine = not yes_ascendingLine 
         yes_horizontalLine = ( math.isclose(chi,0.) or math.isclose(chi,math.pi) )
         yes_verticalLine   = ( math.isclose(chi,math.pi/2.) or math.isclose(chi,3.*math.pi/2.) )
 
